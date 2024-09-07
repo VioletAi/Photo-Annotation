@@ -91,7 +91,7 @@ def render_mesh(pose, intrin_path, image_width, image_height, mesh, name, device
     width, height = image_width, image_height
     rotation_matrix = world_to_camera[:3, :3].permute(1, 0).unsqueeze(0)
     translation_vector = world_to_camera[:3, 3].reshape(-1, 1).permute(1, 0)
-  # print("translation vector",translation_vector)
+
     focal_length = -torch.tensor([[fx, fy]])
     principal_point = torch.tensor([[cx, cy]])
     camera = PerspectiveCameras(
@@ -119,12 +119,12 @@ def render_mesh(pose, intrin_path, image_width, image_height, mesh, name, device
         ),
     )
     rendered_image = renderer(mesh)
-    # print("rendered image shape",rendered_image.shape)
+
     rendered_image = rendered_image[0].cpu().numpy()
 
     color = rendered_image[..., :3]
-    # print("color: ",color[0])
+
     color_image = Image.fromarray((color * 255).astype(np.uint8))
     # display(color_image)
-    # color_image.save(name)
+    color_image.save(name)
     return color_image,camera
