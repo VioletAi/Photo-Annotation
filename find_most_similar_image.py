@@ -128,3 +128,32 @@ def render_mesh(pose, intrin_path, image_width, image_height, mesh, name, device
     # display(color_image)
     color_image.save(name)
     return color_image,camera
+
+def revert_alignment(scene_id, original_coords):
+
+    # Calculate the inverse of the alignment matrix
+
+    for line in open(SCANNET_META.format(scene_id, scene_id)).readlines():
+        if 'axisAlignment' in line:
+            axis_align_matrix = np.array(
+                [float(x) for x in line.rstrip().strip('axisAlignment = ').split(' ')]).reshape((4, 4))
+            break
+    # Convert the numpy array to a PyTorch tensor
+    axis_align_matrix = torch.tensor(axis_align_matrix, dtype=torch.float32, device=original_coords.device)
+
+
+    # Calculate the inverse of the alignment matrix
+    axis_align_matrix = torch.linalg.inv(axis_align_matrix)
+
+
+    # Prepare aligned coordinates by adding a column of ones for homogeneous coordinates
+    ones = torch.ones((original_coords.shape[0], 1), device=original_coords.device)
+    homogeneous_coords = torch.cat((original_coords, ones), dim=1)
+
+    # Apply the inverse transformation
+    original_coords_homogeneous = torch.matmul(homogeneous_coords, axis_align_matrix.t())
+
+    # Convert back from homogeneous to 3D coordinates
+    original_coords = original_coords_homogeneous[:, :3]
+
+    return original_coords
