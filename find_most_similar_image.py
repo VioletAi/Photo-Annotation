@@ -1,23 +1,12 @@
 import sys
-import json
 import numpy as np
 import torch
 from pytorch3d.io import IO
-from pytorch3d.renderer import (
-    PerspectiveCameras,
-    RasterizationSettings,
-    MeshRenderer,
-    MeshRasterizer,
-    AmbientLights,
-    HardPhongShader,
-    BlendParams)
+import json
+import cv2
 
 from PIL import Image, ImageDraw, ImageFont
-
-import numpy as np
-
-from compute_not_occluded_idx import *
-from find_most_similar_picture import *
+from take_photo import *
 
 import os
 sys.path.append(os.path.join(os.getcwd()))
@@ -26,134 +15,97 @@ SCANNET_ROOT = "/home/wa285/rds/hpc-work/Thesis/dataset/scannet/raw/scans"
 SCANNET_MESH = os.path.join(SCANNET_ROOT, "{}/{}_vh_clean_2.ply")  # scene_id, scene_id
 SCANNET_META = os.path.join(SCANNET_ROOT, "{}/{}.txt")  # scene_id, scene_id
 
-def lookat(center, target, up):
+def normalized_cross_correlation(image1, image2):
     """
-    From: LAR-Look-Around-and-Refer
-    https://github.com/eslambakr/LAR-Look-Around-and-Refer
-    https://github.com/isl-org/Open3D/issues/2338
-    https://stackoverflow.com/questions/54897009/look-at-function-returns-a-view-matrix-with-wrong-forward-position-python-im
-    https://www.scratchapixel.com/lessons/mathematics-physics-for-computer-graphics/lookat-function
-    https://www.youtube.com/watch?v=G6skrOtJtbM
-    f: forward
-    s: right
-    u: up
+    Computes normalized cross-correlation for color images channel by channel and returns the average.
+    Assumes image1 and image2 are PIL images.
     """
-    f = target - center
-    f = f / np.linalg.norm(f)
-    s = np.cross(f, up)
-    s = s / np.linalg.norm(s)
-    u = np.cross(s, f)
-    u = u / np.linalg.norm(u)
-
-    m = np.zeros((4, 4))
-    m[0, :-1] = -s
-    m[1, :-1] = u
-    m[2, :-1] = f
-    m[-1, -1] = 1.0
-
-    t = np.matmul(-m[:3, :3], center)
-    m[:3, 3] = t
-
-    return m
+    # Convert PIL images to NumPy arrays
+    image1_np = np.array(image1)
+    image2_np = np.array(image2)
+    
+    # Initialize cross-correlation scores for each channel (R, G, B)
+    ncc_scores = []
+    
+    for i in range(3):  # Loop over RGB channels
+        channel1 = image1_np[:, :, i]
+        channel2 = image2_np[:, :, i]
+        result = cv2.matchTemplate(channel1, channel2, cv2.TM_CCORR_NORMED)
+        ncc_scores.append(result[0][0])  # Extract the cross-correlation value
+    
+    return np.mean(ncc_scores)  # Return the average similarity across all channels
 
 
-def get_extrinsic(camera_location,target_location):
-    camera_location=np.array(camera_location)
-    target_location=np.array(target_location)
+def read_matrix_from_file(file_path):
+    """ Reads a matrix from a text file. """
+    return np.loadtxt(file_path)
 
-    up_vector = np.array([0, 0, -1])
-    pose_matrix = lookat(camera_location, target_location, up_vector)
-    pose_matrix_calibrated = np.transpose(np.linalg.inv(np.transpose(pose_matrix)))
-    return pose_matrix_calibrated
+def capture_one_image(scene_id, annotated_camera, instance_attribute_file, image_width, image_height, save_path):
+    device = torch.device("cuda")
+    instance_attrs = torch.load(instance_attribute_file)
 
+    mesh_file = f"/home/wa285/rds/hpc-work/Thesis/dataset/scannet/raw/scans/{scene_id}/{scene_id}_vh_clean_2.ply"
 
-def render_mesh(pose, intrin_path, image_width, image_height, mesh, name, device):
-    """
-    Given the mesh in PyTorch3D format, render images with a defined pose, intrinsic matrix, and image dimensions
-    """
+    file_path = f'/home/wa285/rds/hpc-work/Thesis/download_intinsic_matrix/output/{scene_id}/intrinsic/intrinsic_color.txt'
 
-    background_color = (1.0, 1.0, 1.0)
-    intrinsic_matrix = torch.zeros([4, 4])
-    intrinsic_matrix[3, 3] = 1
+    camera_position = annotated_camera["position"]
+    lookat_point = annotated_camera["lookat"]
 
-    intrinsic_matrix_load = intrin_path
-    intrinsic_matrix_load_torch = torch.from_numpy(intrinsic_matrix_load)
-    intrinsic_matrix[:3, :3] = intrinsic_matrix_load_torch
-    extrinsic_load = pose
-    camera_to_world = torch.from_numpy(extrinsic_load)
-    world_to_camera = torch.inverse(camera_to_world)
-    fx, fy, cx, cy = (
-        intrinsic_matrix[0, 0],
-        intrinsic_matrix[1, 1],
-        intrinsic_matrix[0, 2],
-        intrinsic_matrix[1, 2],
-    )
-    width, height = image_width, image_height
-    rotation_matrix = world_to_camera[:3, :3].permute(1, 0).unsqueeze(0)
-    translation_vector = world_to_camera[:3, 3].reshape(-1, 1).permute(1, 0)
+    # get extrinsic matrix
+    view_matrix = get_extrinsic(camera_position, lookat_point)
+    depth_intrinsic = np.loadtxt(file_path)
+    print(view_matrix)
+    pt3d_io = IO()
+    mesh = pt3d_io.load_mesh(mesh_file, device=device)
+    target_image ,camera =render_mesh(
+    view_matrix,
+    depth_intrinsic[:3, :3],
+    image_width,
+    image_height,
+    mesh,
+    f"./image_rendered_angle.png", device=device)
+    
+    # find the most similar matrix
+    candidate_poses = f"/home/wa285/rds/hpc-work/Thesis/image_dataset_pose/images_and_pose/{scene_id}/pose"
 
-    focal_length = -torch.tensor([[fx, fy]])
-    principal_point = torch.tensor([[cx, cy]])
-    camera = PerspectiveCameras(
-        focal_length=focal_length,
-        principal_point=principal_point,
-        R=rotation_matrix,
-        T=translation_vector,
-        image_size=torch.tensor([[height, width]]),
-        in_ndc=False,
-        device=device,
-    )
-    lights = AmbientLights(device=device)
-    raster_settings = RasterizationSettings(
-        image_size=(height, width),
-        blur_radius=0.0,
-        faces_per_pixel=1,
-    )
-    renderer = MeshRenderer(
-        rasterizer=MeshRasterizer(cameras=camera, raster_settings=raster_settings),
-        shader=HardPhongShader(
-            blend_params=BlendParams(background_color=background_color),
-            device=lights.device,
-            cameras=camera,
-            lights=lights,
-        ),
-    )
-    rendered_image = renderer(mesh)
+    best_similarity = -1
+    best_extrinsic = None
+    best_file_name = None
 
-    rendered_image = rendered_image[0].cpu().numpy()
+    for file_name in os.listdir(candidate_poses):
+        file_path = os.path.join(candidate_poses, file_name)
+        
+        # Read the matrix from the current file
+        candidate_extrinsic_matrix = read_matrix_from_file(file_path)
+        candidate_image ,camera =render_mesh(
+        candidate_extrinsic_matrix,
+        depth_intrinsic[:3, :3],
+        image_width,
+        image_height,
+        mesh,
+        f"./candidate{file_name}.png", device=device)
 
-    color = rendered_image[..., :3]
-
-    color_image = Image.fromarray((color * 255).astype(np.uint8))
-    # display(color_image)
-    color_image.save(name)
-    return color_image,camera
-
-def revert_alignment(scene_id, original_coords):
-
-    # Calculate the inverse of the alignment matrix
-
-    for line in open(SCANNET_META.format(scene_id, scene_id)).readlines():
-        if 'axisAlignment' in line:
-            axis_align_matrix = np.array(
-                [float(x) for x in line.rstrip().strip('axisAlignment = ').split(' ')]).reshape((4, 4))
-            break
-    # Convert the numpy array to a PyTorch tensor
-    axis_align_matrix = torch.tensor(axis_align_matrix, dtype=torch.float32, device=original_coords.device)
+        # Compute similarity using normalized cross-correlation
+        similarity = normalized_cross_correlation(target_image, candidate_image)
+        
+        if similarity > best_similarity:
+            best_similarity = similarity
+            best_extrinsic = candidate_extrinsic_matrix
+            best_file_name = file_name
+    
+    print(best_file_name)
+    return best_extrinsic, best_similarity
 
 
-    # Calculate the inverse of the alignment matrix
-    axis_align_matrix = torch.linalg.inv(axis_align_matrix)
+if __name__ == "__main__":
 
+    with open("/home/wa285/rds/hpc-work/Thesis/annotated_cameras/scene0011_00.anns.json", 'r') as file:
+        parsed_data = json.load(file)
+    instance_attribute_file = f"/home/wa285/rds/hpc-work/Thesis/Thesis-Chat-3D-v2/annotations/scannet_mask3d_val_attributes.pt"
+    
+    test_annotated_camera=parsed_data[27]['camera']
 
-    # Prepare aligned coordinates by adding a column of ones for homogeneous coordinates
-    ones = torch.ones((original_coords.shape[0], 1), device=original_coords.device)
-    homogeneous_coords = torch.cat((original_coords, ones), dim=1)
-
-    # Apply the inverse transformation
-    original_coords_homogeneous = torch.matmul(homogeneous_coords, axis_align_matrix.t())
-
-    # Convert back from homogeneous to 3D coordinates
-    original_coords = original_coords_homogeneous[:, :3]
-
-    return original_coords
+    file_path = '/home/wa285/rds/hpc-work/Thesis/download_intinsic_matrix/output/scene0011_00/intrinsic/intrinsic_color.txt'
+    save_path="hello3.png"
+    print(parsed_data[27])
+    capture_one_image("scene0011_00", test_annotated_camera, instance_attribute_file, 1296, 968, save_path)
