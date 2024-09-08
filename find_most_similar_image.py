@@ -17,22 +17,6 @@ SCANNET_ROOT = "/home/wa285/rds/hpc-work/Thesis/dataset/scannet/raw/scans"
 SCANNET_MESH = os.path.join(SCANNET_ROOT, "{}/{}_vh_clean_2.ply")  # scene_id, scene_id
 SCANNET_META = os.path.join(SCANNET_ROOT, "{}/{}.txt")  # scene_id, scene_id
 
-def normalized_cross_correlation(image1, image2):
-    """
-    Computes normalized cross-correlation for color images channel by channel and returns the average.
-    Assumes image1 and image2 are PIL images.
-    """
-    # Convert PIL images to NumPy arrays
-    np_imageA = np.array(image1)
-    np_imageB = np.array(image2)
-    
-    # Convert images to grayscale
-    grayA = cv2.cvtColor(np_imageA, cv2.COLOR_RGB2GRAY)
-    grayB = cv2.cvtColor(np_imageB, cv2.COLOR_RGB2GRAY)
-    
-    # Compute SSIM between the two images
-    score, _ = ssim(grayA, grayB, full=True)
-    return score
 
 def compute_mean_euclidean_distance_3D(points_A, points_B):
     """
@@ -53,7 +37,7 @@ def read_matrix_from_file(file_path):
     """ Reads a matrix from a text file. """
     return np.loadtxt(file_path)
 
-def capture_one_image(scene_id, annotated_camera, instance_attribute_file, image_width, image_height, save_path):
+def find_most_similar_pose(scene_id, annotated_camera, instance_attribute_file, image_width, image_height, save_path):
     device = torch.device("cuda")
     instance_attrs = torch.load(instance_attribute_file)
 
